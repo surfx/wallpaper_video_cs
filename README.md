@@ -1,6 +1,6 @@
 # Wallpaper vídeo
 
-![wallpaper video](assets/wallpaper_video.png)
+![wallpaper video](WallpaperVideo/assets/wallpaper_video.png)
 
 ## Dependências
 
