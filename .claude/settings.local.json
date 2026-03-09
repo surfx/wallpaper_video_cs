@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./run.ps1:*)",
+      "Bash(powershell:*)"
+    ]
+  }
+}
