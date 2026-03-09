@@ -25,14 +25,25 @@ namespace WallpaperVideo
             InitializeComponent();
             ItemsVideos.ItemsSource = VideoList;
             
+            // once the underlying window is created we can tweak its styles
             this.SourceInitialized += (s, e) =>
             {
                 var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+
+                // remove the maximize button from the system menu as well (optional)
                 var hMenu = GetSystemMenu(handle, false);
                 if (hMenu != IntPtr.Zero)
                 {
-                    DeleteMenu(hMenu, 6, 0x00001000);
+                    const int SC_MAXIMIZE = 0xF030;
+                    const int MF_BYCOMMAND = 0x00000000;
+                    DeleteMenu(hMenu, SC_MAXIMIZE, MF_BYCOMMAND);
                 }
+
+                // clear the WS_MAXIMIZEBOX style so no maximize button is shown
+                const int GWL_STYLE = -16;
+                const int WS_MAXIMIZEBOX = 0x00010000;
+                int style = GetWindowLong(handle, GWL_STYLE);
+                SetWindowLong(handle, GWL_STYLE, style & ~WS_MAXIMIZEBOX);
             };
         }
 
@@ -42,9 +53,17 @@ namespace WallpaperVideo
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool DeleteMenu(IntPtr hMenu, int nPos, int wFlags);
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
             LoadConfig();
+            // after configuration is restored, make sure a background video plays
+            EnsureBackgroundVideo();
         }
 
         private void SaveConfig(object? sender, EventArgs? e)
@@ -62,7 +81,8 @@ namespace WallpaperVideo
                 IsRandom = chkRandom.IsChecked ?? false,
                 Minutes = txtMinutes.Text,
                 StartWithWindows = chkStartWindows.IsChecked ?? false,
-                SavedVideos = VideoList.ToList()
+                SavedVideos = VideoList.ToList(),
+                CurrentVideoPath = currentVideoPath
             };
 
             try
@@ -70,6 +90,61 @@ namespace WallpaperVideo
                 File.WriteAllText(configPath, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
             }
             catch { }
+        }
+
+        private string? currentVideoPath;
+
+        private bool IsThumbnailValid(string? path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            if (!File.Exists(path)) return false;
+            try
+            {
+                // try loading the image to make sure it's not corrupted
+                var img = new System.Windows.Media.Imaging.BitmapImage();
+                img.BeginInit();
+                img.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                img.UriSource = new Uri(path);
+                img.EndInit();
+                return img.PixelWidth > 0 && img.PixelHeight > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void ValidateThumbnails()
+        {
+            // run background task that repairs only invalid thumbnails
+            Task.Run(() =>
+            {
+                var tempList = VideoList.ToList();
+
+                foreach (var v in tempList)
+                {
+                    if (!IsThumbnailValid(v.Thumbnail))
+                    {
+                        var thumbGerada = GetThumbnailWithMpv(v.FullPath);
+                        if (thumbGerada != null)
+                        {
+                            System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                            {
+                                var itemNoGrid = VideoList.FirstOrDefault(x => x.FullPath == v.FullPath);
+                                if (itemNoGrid != null)
+                                {
+                                    int index = VideoList.IndexOf(itemNoGrid);
+                                    VideoList.RemoveAt(index);
+                                    itemNoGrid.Thumbnail = thumbGerada;
+                                    VideoList.Insert(index, itemNoGrid);
+                                }
+
+                                SaveConfig(null, null);
+                            });
+                        }
+                    }
+                }
+            });
         }
 
         private void LoadConfig()
@@ -94,49 +169,15 @@ namespace WallpaperVideo
                         txtMinutes.Text = config.Minutes;
                         chkStartWindows.IsChecked = config.StartWithWindows;
 
+                        currentVideoPath = config.CurrentVideoPath;
+
                         VideoList.Clear();
                         if (config.SavedVideos != null)
                         {
                             foreach (var v in config.SavedVideos) VideoList.Add(v);
 
-                            Task.Run(() =>
-                            {
-                                bool mudouAlgo = false;
-                                var tempList = config.SavedVideos.ToList();
-
-                                foreach (var v in tempList)
-                                {
-                                    bool precisaGerar = string.IsNullOrEmpty(v.Thumbnail) || 
-                                        !File.Exists(v.Thumbnail) ||
-                                        (USAR_THUMB_GIF && v.Thumbnail.EndsWith(".jpg")) ||
-                                        (!USAR_THUMB_GIF && v.Thumbnail.EndsWith(".gif"));
-                                    
-                                    if (precisaGerar)
-                                    {
-                                        var thumbGerada = GetThumbnailWithMpv(v.FullPath);
-                                        if (thumbGerada != null)
-                                        {
-                                            mudouAlgo = true;
-                                            System.Windows.Application.Current.Dispatcher.Invoke(() =>
-                                            {
-                                                var itemNoGrid = VideoList.FirstOrDefault(x => x.FullPath == v.FullPath);
-                                                if (itemNoGrid != null)
-                                                {
-                                                    int index = VideoList.IndexOf(itemNoGrid);
-                                                    VideoList.RemoveAt(index);
-                                                    itemNoGrid.Thumbnail = thumbGerada;
-                                                    VideoList.Insert(index, itemNoGrid);
-                                                }
-                                            });
-                                        }
-                                    }
-                                }
-
-                                if (mudouAlgo)
-                                {
-                                    System.Windows.Application.Current.Dispatcher.Invoke(() => SaveConfig(null, null));
-                                }
-                            });
+                            // validate thumbs after UI is populated
+                            ValidateThumbnails();
                         }
                         return;
                     }
@@ -155,6 +196,9 @@ namespace WallpaperVideo
                 txtPath.Text = dialog.FolderName;
                 LoadVideosFromFolder(dialog.FolderName);
                 SaveConfig(null, null);
+
+                // if nothing is playing yet, pick one now
+                EnsureBackgroundVideo();
             }
         }
 
@@ -193,17 +237,20 @@ namespace WallpaperVideo
 
             Task.Run(() =>
             {
-                bool mudouAlgo = false;
                 var tempList = VideoList.ToList();
 
                 foreach (var v in tempList)
                 {
-                    if (string.IsNullOrEmpty(v.Thumbnail) || !File.Exists(v.Thumbnail))
+                    bool precisaGerar = string.IsNullOrEmpty(v.Thumbnail) || 
+                        !File.Exists(v.Thumbnail) ||
+                        (USAR_THUMB_GIF && v.Thumbnail.EndsWith(".jpg")) ||
+                        (!USAR_THUMB_GIF && v.Thumbnail.EndsWith(".gif"));
+                    
+                    if (precisaGerar)
                     {
                         var thumbGerada = GetThumbnailWithMpv(v.FullPath);
                         if (thumbGerada != null)
                         {
-                            mudouAlgo = true;
                             System.Windows.Application.Current.Dispatcher.Invoke(() =>
                             {
                                 var itemNoGrid = VideoList.FirstOrDefault(x => x.FullPath == v.FullPath);
@@ -214,15 +261,16 @@ namespace WallpaperVideo
                                     itemNoGrid.Thumbnail = thumbGerada;
                                     VideoList.Insert(index, itemNoGrid);
                                 }
+
+                                // persist update right away so the JSON never loses the thumbnail
+                                SaveConfig(null, null);
                             });
                         }
                     }
                 }
 
-                if (mudouAlgo)
-                {
-                    System.Windows.Application.Current.Dispatcher.Invoke(() => SaveConfig(null, null));
-                }
+                // after filling the folder, also ensure validity of any others
+                ValidateThumbnails();
             });
         }
 
@@ -262,32 +310,89 @@ namespace WallpaperVideo
             }
         }
 
+        /// <summary>
+        /// play a video item and record the choice
+        /// </summary>
+        private void PlayVideo(VideoItem video)
+        {
+            KillAllMpvProcesses();
+
+            string mpvFolder = txtMpvPath.Text;
+            string mpvExe = Path.Combine(mpvFolder, "mpv.exe");
+
+            if (!File.Exists(mpvExe))
+            {
+                System.Windows.MessageBox.Show("mpv.exe não encontrado!", "Erro", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = mpvExe,
+                Arguments = $"--wid=0 --vo=gpu --hwdec=auto --loop-file=inf --no-audio \"{video.FullPath}\"",
+                UseShellExecute = false
+            };
+
+            mpvProcess = System.Diagnostics.Process.Start(startInfo);
+
+            // remember current video and persist
+            currentVideoPath = video.FullPath;
+            SaveConfig(null, null);
+        }
+
+        /// <summary>
+        /// ensure there is a background video playing; choose random if necessary
+        /// </summary>
+        private void EnsureBackgroundVideo()
+        {
+            // if something is already running, leave it
+            if (mpvProcess != null && !mpvProcess.HasExited) return;
+
+            // compile candidate list
+            var candidates = VideoList.Select(v => v.FullPath).ToList();
+            if (candidates.Count == 0 && Directory.Exists(txtPath.Text))
+            {
+                // reload list synchronously if the folder exists and list is empty
+                LoadVideosFromFolder(txtPath.Text);
+                candidates = VideoList.Select(v => v.FullPath).ToList();
+            }
+
+            string? pick = null;
+            if (!string.IsNullOrEmpty(currentVideoPath) && File.Exists(currentVideoPath))
+            {
+                // if the saved path still exists, use it
+                pick = currentVideoPath;
+            }
+
+            // if the remembered video isn't part of the freshly loaded list, ignore it
+            if (pick != null && !candidates.Contains(pick))
+            {
+                pick = null;
+            }
+
+            if (pick == null && candidates.Count > 0)
+            {
+                var rand = new Random();
+                pick = candidates[rand.Next(candidates.Count)];
+            }
+
+            if (pick != null)
+            {
+                var item = VideoList.FirstOrDefault(v => v.FullPath == pick);
+                if (item != null)
+                {
+                    PlayVideo(item);
+                }
+            }
+        }
+
         private void PlayVideo_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             var border = sender as System.Windows.Controls.Border;
             var video = border?.DataContext as VideoItem;
-
             if (video != null)
             {
-                KillAllMpvProcesses();
-
-                string mpvFolder = txtMpvPath.Text;
-                string mpvExe = Path.Combine(mpvFolder, "mpv.exe");
-
-                if (!File.Exists(mpvExe))
-                {
-                    System.Windows.MessageBox.Show("mpv.exe não encontrado!", "Erro", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return;
-                }
-
-                var startInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = mpvExe,
-                    Arguments = $"--wid=0 --vo=gpu --hwdec=auto --loop-file=inf --no-audio \"{video.FullPath}\"",
-                    UseShellExecute = false
-                };
-
-                mpvProcess = System.Diagnostics.Process.Start(startInfo);
+                PlayVideo(video);
             }
         }
 
@@ -447,5 +552,6 @@ namespace WallpaperVideo
         public string Minutes { get; set; } = "";
         public bool StartWithWindows { get; set; }
         public List<VideoItem> SavedVideos { get; set; } = new List<VideoItem>();
+        public string? CurrentVideoPath { get; set; }
     }
 }

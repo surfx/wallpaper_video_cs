@@ -5,7 +5,7 @@
         Background="#161A22"
         Foreground="#E7EDF6"
         WindowStyle="SingleBorderWindow"
-        ResizeMode="CanMinimize"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"
         Closing="Window_Closing"
         Loaded="Window_Loaded"
