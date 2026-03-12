@@ -1,8 +1,11 @@
-using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Windows;
 using Forms = System.Windows.Forms;
+using WallpaperVideo.Utils;
+using WallpaperVideo.Utils.Logging;
+using WallpaperVideo.Utils.Media;
+using WallpaperVideo.Utils.Models;
 
 namespace WallpaperVideo
 {
@@ -10,44 +13,30 @@ namespace WallpaperVideo
     {
         private Forms.NotifyIcon _trayIcon = null!;
         private MainWindow? _mainWindow;
-        private Process? _mpvProcess;
+        private readonly MpvController _mpvController;
+        private readonly ConfigManager _configManager;
+        private ToolStripMenuItem? _menuProximo;
+        private CancellationTokenSource? _videoTimerCts;
 
-        public void StopWallpaperPlayback()
+        public App()
         {
-            try
-            {
-                if (_mpvProcess != null && !_mpvProcess.HasExited)
-                {
-                    _mpvProcess.Kill();
-                }
-            }
-            catch { }
-            finally
-            {
-                _mpvProcess = null;
-            }
-        }
-
-        private void KillAllMpvProcesses()
-        {
-            StopWallpaperPlayback();
-
-            var mpvProcesses = Process.GetProcessesByName("mpv");
-            foreach (var p in mpvProcesses)
-            {
-                try
-                {
-                    p.Kill();
-                    p.WaitForExit(2000);
-                }
-                catch { }
-            }
+            _configManager = new ConfigManager();
+            _mpvController = new MpvController();
         }
 
         private void Application_Startup(object sender, StartupEventArgs e)
         {
+            Logger.Clear();
+            
+            _configManager.Load();
+
             var contextMenu = new Forms.ContextMenuStrip();
             contextMenu.Items.Add("Configurações", null, OnSettingsClick);
+            
+            _menuProximo = new ToolStripMenuItem("Próximo", null, OnProximoClick);
+            _menuProximo.Visible = _configManager.ShouldShowMenuProximo;
+            contextMenu.Items.Add(_menuProximo);
+            
             contextMenu.Items.Add("Sair", null, OnExitClick);
 
             var iconStream = Assembly.GetExecutingAssembly()
@@ -65,87 +54,101 @@ namespace WallpaperVideo
 
             _trayIcon.DoubleClick += (s, args) => ShowSettings();
 
+            var config = _configManager.Config;
+            if (config != null)
+            {
+                _mpvController.SetMpvPath(config.MpvPath);
+            }
+
             PlayStartupVideo();
+            
+            if (!_configManager.HasVideos)
+            {
+                ShowSettings();
+            }
         }
 
         private void PlayStartupVideo()
         {
-            var configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
-            if (!File.Exists(configPath)) return;
+            var config = _configManager.Config;
+            if (config == null || !_configManager.HasVideos) return;
 
+            var mpvPath = config.MpvPath;
+            _mpvController.SetMpvPath(mpvPath);
+
+            _mpvController.StartWithPlaylist(config.SavedVideos, config.CurrentVideoPath);
+            _ = StartVideoTimer(config);
+        }
+
+        private VideoItem GetRandomVideoExcluding(List<VideoItem> videos, string? excludePath)
+        {
+            if (videos.Count <= 1 || string.IsNullOrEmpty(excludePath))
+                return videos[new Random().Next(videos.Count)];
+
+            var filtered = videos.Where(v => v.FullPath != excludePath).ToList();
+            return filtered.Count == 0
+                ? videos[new Random().Next(videos.Count)]
+                : filtered[new Random().Next(filtered.Count)];
+        }
+
+        private async Task StartVideoTimer(AppConfig config)
+        {
+            _videoTimerCts?.Cancel();
+            _videoTimerCts = new CancellationTokenSource();
+            
             try
             {
-                var json = File.ReadAllText(configPath);
-                var config = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(json);
-                if (config?.SavedVideos == null || config.SavedVideos.Count == 0) return;
-
-                var video = config.IsRandom && config.SavedVideos.Count > 1
-                    ? config.SavedVideos[new Random().Next(config.SavedVideos.Count)]
-                    : config.SavedVideos[0];
-
-                var mpvPath = string.IsNullOrWhiteSpace(config.MpvPath)
-                    ? @"D:\programas\executaveis\mpv"
-                    : config.MpvPath;
-                var mpvExe = Path.Combine(mpvPath, "mpv.exe");
-
-                if (!File.Exists(mpvExe) || !File.Exists(video.FullPath)) return;
-
-                _mpvProcess = new Process
+                if (int.TryParse(config.Minutes, out var minutes) && minutes > 0)
                 {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = mpvExe,
-                        Arguments = $"--wid=0 --vo=gpu --hwdec=auto --loop-file=inf --no-audio \"{video.FullPath}\"",
-                        UseShellExecute = false
-                    }
-                };
-                _mpvProcess.Start();
-
-                _ = Task.Run(async () =>
-                {
-                    if (int.TryParse(config.Minutes, out var minutes) && minutes > 0)
-                    {
-                        await Task.Delay(TimeSpan.FromMinutes(minutes));
-                        System.Windows.Application.Current.Dispatcher.Invoke(() => NextRandomVideo(config));
-                    }
-                });
+                    await Task.Delay(TimeSpan.FromMinutes(minutes), _videoTimerCts.Token);
+                    System.Windows.Application.Current.Dispatcher.Invoke(() => NextRandomVideo(config));
+                }
             }
-            catch { }
+            catch (TaskCanceledException) { }
         }
 
         private void NextRandomVideo(AppConfig config)
         {
             if (config.SavedVideos == null || config.SavedVideos.Count <= 1) return;
 
-            StopWallpaperPlayback();
-
-            var nextVideo = config.SavedVideos[new Random().Next(config.SavedVideos.Count)];
-            var mpvPath = string.IsNullOrWhiteSpace(config.MpvPath)
-                ? @"D:\programas\executaveis\mpv"
-                : config.MpvPath;
-            var mpvExe = Path.Combine(mpvPath, "mpv.exe");
-
-            if (!File.Exists(mpvExe) || !File.Exists(nextVideo.FullPath)) return;
-
-            _mpvProcess = new Process
+            var nextVideo = GetRandomVideoExcluding(config.SavedVideos, config.CurrentVideoPath);
+            
+            if (!_mpvController.SwitchVideo(nextVideo.FullPath))
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = mpvExe,
-                    Arguments = $"--wid=0 --vo=gpu --hwdec=auto --loop-file=inf --no-audio \"{nextVideo.FullPath}\"",
-                    UseShellExecute = false
-                }
-            };
-            _mpvProcess.Start();
+                Logger.Log("NextRandomVideo: switch failed, restarting");
+                _mpvController.StartWithPlaylist(config.SavedVideos, nextVideo.FullPath);
+            }
 
-            _ = Task.Run(async () =>
+            _configManager.UpdateCurrentVideo(nextVideo.FullPath);
+            _ = StartVideoTimer(config);
+            Logger.Log($"NextRandomVideo: {nextVideo.Name}");
+        }
+
+        public void PlayVideo(string videoPath)
+        {
+            var config = _configManager.Config;
+            if (config == null) return;
+
+            _mpvController.SetMpvPath(config.MpvPath);
+
+            if (!_mpvController.SwitchVideo(videoPath))
             {
-                if (int.TryParse(config.Minutes, out var minutes) && minutes > 0)
-                {
-                    await Task.Delay(TimeSpan.FromMinutes(minutes));
-                    System.Windows.Application.Current.Dispatcher.Invoke(() => NextRandomVideo(config));
-                }
-            });
+                Logger.Log("PlayVideo: switch failed, restarting");
+                _mpvController.StartWithPlaylist(config.SavedVideos, videoPath);
+            }
+
+            _configManager.UpdateCurrentVideo(videoPath);
+            _ = StartVideoTimer(config);
+            Logger.Log($"PlayVideo: {Path.GetFileName(videoPath)}");
+        }
+
+        private void OnProximoClick(object? sender, EventArgs e)
+        {
+            _configManager.Load();
+            if (_configManager.Config != null)
+            {
+                NextRandomVideo(_configManager.Config);
+            }
         }
 
         private void OnSettingsClick(object? sender, EventArgs e)
@@ -170,19 +173,47 @@ namespace WallpaperVideo
                 _mainWindow.Show();
                 _mainWindow.Activate();
             }
+
+            EnsureBackgroundVideoIfNeeded();
+        }
+
+        private void EnsureBackgroundVideoIfNeeded()
+        {
+            _configManager.Load();
+            
+            if (_configManager.Config == null) return;
+
+            bool hasVideoPlaying = _mpvController.IsRunning;
+            Logger.Log($"EnsureBackgroundVideoIfNeeded: hasVideoPlaying={hasVideoPlaying}");
+
+            if (!hasVideoPlaying)
+            {
+                Logger.Log("EnsureBackgroundVideoIfNeeded: starting video");
+                PlayStartupVideo();
+            }
         }
 
         private void OnExitClick(object? sender, EventArgs e)
         {
             _mainWindow?.ForceClose();
-            KillAllMpvProcesses();
+            _mpvController.StopAll();
+            System.Threading.Thread.Sleep(1000);
             Shutdown();
         }
 
         private void Application_Exit(object sender, ExitEventArgs e)
         {
             _trayIcon?.Dispose();
-            KillAllMpvProcesses();
+            _mpvController.StopAll();
+            System.Threading.Thread.Sleep(1000);
         }
+
+        public void UpdateRandomMode(bool isRandom)
+        {
+            _configManager.UpdateRandomMode(isRandom);
+            _menuProximo!.Visible = _configManager.ShouldShowMenuProximo;
+        }
+
+        public MpvController? GetMpvController() => _mpvController;
     }
 }

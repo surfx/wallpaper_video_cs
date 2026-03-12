@@ -116,7 +116,7 @@
             </Grid>
 
             <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="15,0,15,15">
-                <CheckBox x:Name="chkRandom" Content="Aleatório" VerticalAlignment="Center" IsChecked="True" Checked="SaveConfig" Unchecked="SaveConfig"/>
+                <CheckBox x:Name="chkRandom" Content="Aleatório" VerticalAlignment="Center" IsChecked="True" Checked="ChkRandom_Changed" Unchecked="ChkRandom_Changed"/>
                 <TextBox x:Name="txtMinutes" Width="45" Margin="10,0,5,0" Text="10" VerticalContentAlignment="Center" IsEnabled="{Binding IsChecked, ElementName=chkRandom}" TextChanged="SaveConfig"/>
                 <Label Content="minutos" Margin="0,0,20,0" Foreground="{StaticResource MutedTextBrush}"/>
                 <CheckBox x:Name="chkStartWindows" Content="Iniciar com o Windows" VerticalAlignment="Center" Click="ChkStartWindows_Click"/>
