@@ -1,9 +1,13 @@
 Push-Location $PSScriptRoot
 
-# ensure any previous instances (app or mpv) are terminated
-& .\kill.ps1
+try {
+    # ensure any previous instances (app or mpv) are terminated
+    & .\kill.ps1
 
-Push-Location ..
-dotnet run
-Pop-Location
-Pop-Location
+    # run dotnet from parent without changing location stack
+    dotnet run --project ".."
+}
+finally {
+    # sempre volta para o diretório original
+    Pop-Location
+}

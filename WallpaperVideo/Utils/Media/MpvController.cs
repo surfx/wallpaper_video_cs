@@ -51,7 +51,7 @@ namespace WallpaperVideo.Utils.Media
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = exePath,
-                    Arguments = $"--wid=0 --vo=gpu --hwdec=auto --loop-file=inf --no-audio --input-ipc-server=\\\\.\\pipe\\{_ipcAddress} --playlist-start={startIndex} {playlistArg}",
+                    Arguments = $"--wid=0 --vo=gpu --hwdec=auto --loop-file=inf --no-audio --input-media-keys=no --input-default-bindings=no --input-vo-keyboard=no --media-controls=no --input-ipc-server=\\\\.\\pipe\\{_ipcAddress} --playlist-start={startIndex} {playlistArg}",
                     UseShellExecute = false,
                     WorkingDirectory = Path.GetDirectoryName(exePath)
                 }
