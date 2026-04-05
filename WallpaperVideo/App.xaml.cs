@@ -39,8 +39,8 @@ namespace WallpaperVideo
             
             contextMenu.Items.Add("Sair", null, OnExitClick);
 
-            var iconStream = Assembly.GetExecutingAssembly()
-                .GetManifestResourceStream("WallpaperVideo.wallpaper.ico");
+            var iconUri = new Uri("pack://application:,,,/assets/you_icon.ico");
+            var iconStream = System.Windows.Application.GetResourceStream(iconUri)?.Stream;
 
             _trayIcon = new Forms.NotifyIcon
             {

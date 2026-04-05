@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Wallpaper Vídeo" Height="500" Width="850"
+        Icon="assets/you_icon.ico"
         Background="Transparent"
         AllowsTransparency="True"
         WindowStyle="None"
